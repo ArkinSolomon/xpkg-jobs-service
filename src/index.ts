@@ -19,7 +19,7 @@
  * @name JobType
  * @enum {string}
  */
-enum JobType {
+export enum JobType {
   Packaging = 'packaging',
   Resource = 'resource'
 }
@@ -67,6 +67,7 @@ import {Server} from 'socket.io';
 import logger from './logger.js';
 import hasha from 'hasha';
 import * as jobDatabase from './jobDatabase.js';
+import JobClaimer from './jobClaimer.js';
 
 logger.info('X-Pkg jobs service starting');
 
@@ -75,14 +76,14 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 // If all jobs are not reclaimed within 10 minutes of boot set them to being failed
-let unclaimedPackageJobs = await jobDatabase.getAllPackagingJobs();
-setTimeout(() => {
-  const clearArr = unclaimedPackageJobs;
-  unclaimedPackageJobs = [];
-
-  for (const job of clearArr)
-    jobDatabase.failPackagingJob(job.packageId, job.version);
-}, 60000);
+const unclaimedPackagingJobs = await jobDatabase.getAllPackagingJobs();
+const packagingJobClaimer = new JobClaimer(JobType.Packaging, unclaimedPackagingJobs);
+if (!unclaimedPackagingJobs.length)
+  logger.info('No unclaimed packaging jobs');
+else if (unclaimedPackagingJobs.length === 1)
+  logger.info('1 unclaimed packaging job');
+else
+  logger.info(unclaimedPackagingJobs.length + ' unclaimed packaging jobs');
 
 io.on('connection', client => {
   const clientLogger = logger.child({ ip: client.conn.remoteAddress });
@@ -125,11 +126,16 @@ io.on('connection', client => {
     switch (data.jobType) {
     case JobType.Packaging: {
       const jobInfo = data.info as PackagingInfo;
-      await jobDatabase.addPackagingJob(jobInfo.packageId, jobInfo.version);
-        
-      // if (unclaimedPackageJobs.length > 0) {
+      
+      if (!jobInfo.packageId || typeof jobInfo.packageId !== 'string' || !jobInfo.version || typeof jobInfo.version !== 'string')
+      {
+        client.disconnect();
+        clientLogger.info('Client attempted to send invalid packaging job data');
+        return;
+      }
 
-      // }
+      await jobDatabase.addPackagingJob(jobInfo.packageId, jobInfo.version);
+      packagingJobClaimer.tryClaimJob(data.info);
       break;
     }
     // case JobType.Resource:
