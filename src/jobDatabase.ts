@@ -84,7 +84,7 @@ export async function completePackagingJob(packageId: string, version: string) {
 export async function failPackagingJob(packageId: string, version: string): Promise<boolean> {
   const [, status] = await Promise.all([
     completePackagingJob(packageId, version),
-    query(mysql.format('SELECT status FROM versions WHERE packageId=? AND version=? LIMIT 1;'))
+    query(mysql.format('SELECT status FROM versions WHERE packageId=? AND version=? LIMIT 1;', [packageId, version]))
   ]);
 
   // We always expect the job to be there, so this shouldn't fail

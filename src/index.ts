@@ -63,7 +63,7 @@ dotenv.config();
 
 import http from 'http';
 import Express from 'express';
-import socketio from 'socket.io';
+import {Server} from 'socket.io';
 import logger from './logger.js';
 import hasha from 'hasha';
 import * as jobDatabase from './jobDatabase.js';
@@ -72,7 +72,17 @@ logger.info('X-Pkg jobs service starting');
 
 const app = Express();
 const server = http.createServer(app);
-const io = new socketio.Server(server);
+const io = new Server(server);
+
+// If all jobs are not reclaimed within 10 minutes of boot set them to being failed
+let unclaimedPackageJobs = await jobDatabase.getAllPackagingJobs();
+setTimeout(() => {
+  const clearArr = unclaimedPackageJobs;
+  unclaimedPackageJobs = [];
+
+  for (const job of clearArr)
+    jobDatabase.failPackagingJob(job.packageId, job.version);
+}, 60000);
 
 io.on('connection', client => {
   const clientLogger = logger.child({ ip: client.conn.remoteAddress });
@@ -83,9 +93,6 @@ io.on('connection', client => {
 
   let jobData: JobData;
 
-  // Dual password authorization for extra security
-  client.emit('handshake', process.env.SERVER_TRUST_KEY);
-
   client.on('handshake', key => {
     if (!key || typeof key !== 'string') {
       client.disconnect();
@@ -94,10 +101,13 @@ io.on('connection', client => {
     }
 
     const hashed = hasha(key, { algorithm: 'sha256' });
-    if (key === hashed) {
+    if (hashed === process.env.JOBS_SERVICE_HASH) {
       authorized = true;
       logger.emit('Client authorized');
       client.emit('authorized');
+    } else {
+      client.disconnect();
+      clientLogger.info('Invalid password provided');
     }
   });
 
@@ -116,6 +126,10 @@ io.on('connection', client => {
     case JobType.Packaging: {
       const jobInfo = data.info as PackagingInfo;
       await jobDatabase.addPackagingJob(jobInfo.packageId, jobInfo.version);
+        
+      // if (unclaimedPackageJobs.length > 0) {
+
+      // }
       break;
     }
     // case JobType.Resource:
@@ -128,11 +142,13 @@ io.on('connection', client => {
     }
 
     clientLogger.info('Job type registered on database');
+    client.emit('job_data_recieived');
   });
 
-  client.on('done', async () => {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  client.on('done', async (_, ack) => {
     jobsDone = true;
-    clientLogger.info('Job completed');
+    clientLogger.info('Worker stating job completed');
 
     switch (jobData.jobType) {
     case JobType.Packaging: {
@@ -148,6 +164,9 @@ io.on('connection', client => {
       client.disconnect();
       return;
     }
+
+    logger.emit('Removed job from database');
+    client.emit('goodbye');
   });
 
   client.on('disconnect', async () => {
@@ -176,9 +195,12 @@ io.on('connection', client => {
     else
       clientLogger.info('Job already had different status, was not failed');
   });
+
+  // Dual password authorization for extra security
+  client.emit('handshake', process.env.SERVER_TRUST_KEY);
 });
 
 const port = process.env.PORT || 5027;
 server.listen(port, () => {
-  console.log(`Server is up on port ${port}!`);
+  logger.info(`X-Pkg jobs service is up on port ${port}`);
 });
