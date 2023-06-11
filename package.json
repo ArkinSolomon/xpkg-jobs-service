@@ -1,7 +1,7 @@
 {
   "name": "xpkg-jobs-service",
   "version": "0.1.0",
-  "description": "A service to make sure jobs don't crash",
+  "description": "A service to handle crashed jobs",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
