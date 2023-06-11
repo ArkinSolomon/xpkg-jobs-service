@@ -1,0 +1,8 @@
+dist/
+node_modules/
+.env
+.vscode/
+out/
+/data.json
+.DS_STORE
+databases/
