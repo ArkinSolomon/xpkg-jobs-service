@@ -63,7 +63,7 @@ dotenv.config();
 
 import http from 'http';
 import Express from 'express';
-import {Server} from 'socket.io';
+import {Server, Socket} from 'socket.io';
 import logger from './logger.js';
 import hasha from 'hasha';
 import * as jobDatabase from './jobDatabase.js';
@@ -85,37 +85,89 @@ else if (unclaimedPackagingJobs.length === 1)
 else
   logger.info(unclaimedPackagingJobs.length + ' unclaimed packaging jobs');
 
+// A list of all of the clients connected to the service, with their job information and socket
+const clients: { jobData: JobData; client: Socket; }[] = [];
+
+const ONE_HOUR_MS = 60 * 60 * 1000;
+const THREE_HOUR_MS = 3 * ONE_HOUR_MS;
+
+// We want to give a chance for all jobs to be claimed
+setTimeout(() => {
+  logger.info('Allowing package jobs to be aborted');
+  setInterval(async function(){
+    const packagingJobs = await jobDatabase.getAllPackagingJobs();
+    const abortJobs = packagingJobs.filter(({ startTime: t }) => t.getTime() < Date.now() - THREE_HOUR_MS);
+
+    for (const abortJob of abortJobs) {
+      const abortLogger = logger.child(abortJob);
+
+      // Since we're awaiting, we have to filter again every loop
+      const packagingClients = clients.filter(c => c.jobData.jobType == JobType.Packaging);
+      const client = packagingClients.find(c => (c.jobData.info as PackagingInfo).packageId === abortJob.packageId && (c.jobData.info as PackagingInfo).version === abortJob.version);
+      
+      // Try to fail it, no worries if it just happened to complete in that short time
+      if (!client) {
+        abortLogger.info('Could not abort job, no client found, failing instead');
+        await jobDatabase.failPackagingJob(abortJob.packageId, abortJob.version);
+        continue;
+      }
+
+      if (!client.client.connected) {
+        abortLogger.info('Could not abort job, client found but not connected, failing instead');
+        await jobDatabase.failPackagingJob(abortJob.packageId, abortJob.version);
+        continue;
+      }
+
+      abortLogger.warn('Aborting job');
+      client.client.emit('abort');
+      
+      let aborted = false;
+      client.client.once('aborting', () => {
+        aborted = true;
+        abortLogger.info('Worker is aborting job');
+      });
+
+      setTimeout(() => {
+        if (aborted)
+          return;
+        abortLogger.info('Disconnecting worker that is not aborting job');
+        client.client.disconnect();
+      }, 250);
+    } 
+  }, ONE_HOUR_MS / 2);
+}, 90000);
+
 io.on('connection', client => {
   const clientLogger = logger.child({ ip: client.conn.remoteAddress });
   clientLogger.info('New connection');
 
   let authorized = false;
-  let jobsDone = false;
+  let jobDone = false;
 
-  let jobData: JobData;
+  let jobData: JobData | undefined;
 
-  client.on('handshake', key => {
-    if (!key || typeof key !== 'string') {
+  client.on('handshake', password => {
+    if (!password || typeof password !== 'string') {
       client.disconnect();
-      clientLogger.info('No password provided or invalid type');
+      clientLogger.warn('No password provided or invalid type');
       return;
     }
 
-    const hashed = hasha(key, { algorithm: 'sha256' });
+    const hashed = hasha(password, { algorithm: 'sha256' });
     if (hashed === process.env.JOBS_SERVICE_HASH) {
       authorized = true;
       logger.emit('Client authorized');
       client.emit('authorized');
     } else {
       client.disconnect();
-      clientLogger.info('Invalid password provided');
+      clientLogger.warn('Invalid password provided');
     }
   });
 
   client.on('job_data', async (data: JobData) => {
     if (!authorized) {
       client.disconnect();
-      clientLogger.info('Client attempted to send job data when incomplete');
+      clientLogger.warn('Client attempted to send job data when unauthorized');
       return;
     }
 
@@ -130,7 +182,7 @@ io.on('connection', client => {
       if (!jobInfo.packageId || typeof jobInfo.packageId !== 'string' || !jobInfo.version || typeof jobInfo.version !== 'string')
       {
         client.disconnect();
-        clientLogger.info('Client attempted to send invalid packaging job data');
+        clientLogger.error('Client attempted to send invalid packaging job data');
         return;
       }
 
@@ -147,14 +199,21 @@ io.on('connection', client => {
       return;
     }
 
-    clientLogger.info('Job type registered on database');
+    clients.push({jobData, client});
+    clientLogger.info('Job registered on database');
     client.emit('job_data_recieived');
   });
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  client.on('done', async (_, ack) => {
-    jobsDone = true;
-    clientLogger.info('Worker stating job completed');
+  client.on('done', async reason => {
+    if (!authorized || !jobData) {
+      client.disconnect();
+      clientLogger.info('Client attempted to state job completed without authorization, or with no job data');
+      return;
+    }
+
+    jobDone = true;
+    clientLogger.info(`Worker stating job completed (${reason})`);
 
     switch (jobData.jobType) {
     case JobType.Packaging: {
@@ -166,6 +225,8 @@ io.on('connection', client => {
     //   const jobInfo = data.info as ResourceInfo;
     // break;
     default:
+        
+      // This shouldn't reach
       clientLogger.error('Invalid job type (while completing)');
       client.disconnect();
       return;
@@ -175,11 +236,29 @@ io.on('connection', client => {
     client.emit('goodbye');
   });
 
-  client.on('disconnect', async () => {
-    if (!authorized || jobsDone)
+  client.on('disconnect', async reason => {
+    if (!authorized) {
+      clientLogger.info(`Unauthorized socket disconnected (${reason})`);
       return;
+    }
 
-    clientLogger.info('Unexpected disconnect, attempting to set job as failure');
+    if (!jobData) {
+      clientLogger.info(`Disconnected without sending jobs data (${reason})`);
+      return;
+    }
+
+    const thisIndex = clients.findIndex(({ client: c }) => c === client);
+    clients.splice(thisIndex, 1);
+
+    if (jobDone) {
+      clientLogger.info(`Completed worker has successfully disconnected from jobs service (${reason})`);
+      return;
+    } else if (reason === 'server namespace disconnect') {
+      clientLogger.info('Worker would not respond to abort request (server namespace disconnect)');
+      return;
+    }
+
+    clientLogger.info(`Unexpected disconnect, attempting to set job as failure (${reason})`);
     let didFail;
     switch (jobData.jobType) {
     case JobType.Packaging: {
@@ -191,6 +270,8 @@ io.on('connection', client => {
     //   const jobInfo = data.info as ResourceInfo;
     // break;
     default:
+        
+      // Shouldn't reach
       clientLogger.error('Invalid job type (while failing)');
       client.disconnect();
       return;

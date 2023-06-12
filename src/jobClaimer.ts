@@ -17,6 +17,9 @@ import { JobType, PackagingInfo, ResourceInfo } from './index.js';
 import * as jobDatabase from './jobDatabase.js';
 import logger from './logger.js';
 
+/**
+ * An instance of this class manages claiming jobs for a single type of job.
+ */
 export default class JobClaimer {
   
   _jobType: JobType;
@@ -26,6 +29,13 @@ export default class JobClaimer {
 
   _locked = false;
 
+  /**
+   * Create a new claimer with a list of jobs that can be claimed. Automatically starts the timer to fail unclaimed jobs.
+   * 
+   * @constructor
+   * @param {JobType} jobType The type of jobs this claimer can claim.
+   * @param {(PackagingInfo|ResourceInfo)[]} jobList The list of jobs that are available to be claimed.
+   */
   constructor(jobType: JobType, jobList: (PackagingInfo | ResourceInfo)[]) {
     this._jobType = jobType;
     this._jobList = jobList;
@@ -73,7 +83,15 @@ export default class JobClaimer {
     }
   }
 
-  tryClaimJob(jobInfo: PackagingInfo | ResourceInfo) {
+  /**
+   * 
+   * 
+   * @param {PackagingInfo|ResourceInfo} jobInfo The information of the job to claim.
+   */
+  tryClaimJob(jobInfo: PackagingInfo | ResourceInfo): void {
+    if (this._locked)
+      return;
+    
     this._claimedJobs.push(jobInfo);
   }
 

@@ -102,8 +102,8 @@ export async function failPackagingJob(packageId: string, version: string): Prom
  * Get all packaging jobs.
  * 
  * @async
- * @returns {Promise<PackagingInfo[]>} A promise which resolves to all of hte information of all packaging jobs.
+ * @returns {Promise<(PackagingInfo & {startTime: Date})[]>} A promise which resolves to all of hte information of all packaging jobs.
  */
-export async function getAllPackagingJobs(): Promise<PackagingInfo[]> {
-  return (await query('SELECT packageId, version FROM package_processing_jobs;')) as PackagingInfo[];
+export async function getAllPackagingJobs(): Promise<(PackagingInfo & {startTime: Date})[]> {
+  return (await query('SELECT packageId, version, startTime FROM package_processing_jobs;')) as (PackagingInfo & {startTime: Date})[];
 }
