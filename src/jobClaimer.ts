@@ -22,12 +22,12 @@ import logger from './logger.js';
  */
 export default class JobClaimer {
   
-  _jobType: JobType;
-  _jobList: (PackagingInfo | ResourceInfo)[];
+  private _jobType: JobType;
+  private _jobList: (PackagingInfo | ResourceInfo)[];
 
-  _claimedJobs: (PackagingInfo | ResourceInfo)[] = [];
+  private _claimedJobs: (PackagingInfo | ResourceInfo)[] = [];
 
-  _locked = false;
+  private _locked = false;
 
   /**
    * Create a new claimer with a list of jobs that can be claimed. Automatically starts the timer to fail unclaimed jobs.
@@ -102,7 +102,7 @@ export default class JobClaimer {
    * @param {PackagingInfo|ResourceInfo} job2 The second job to compare.
    * @returns {boolean} True if the jobs are the same.
    */
-  _doJobsMatch(job1: PackagingInfo | ResourceInfo, job2: PackagingInfo | ResourceInfo): boolean {
+  private _doJobsMatch(job1: PackagingInfo | ResourceInfo, job2: PackagingInfo | ResourceInfo): boolean {
     switch (this._jobType) {
     case JobType.Packaging:
     {

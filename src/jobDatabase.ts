@@ -17,11 +17,11 @@ import mysql from 'mysql2';
 import { PackagingInfo } from './index.js';
 
 const pool = mysql.createPool({
-  connectionLimit: 15,
-  host: '127.0.0.1',
+  connectionLimit: 10,
+  host: process.env.DB_ADDR,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
-  database: 'xpkg_packages',
+  database: process.env.DB_NAME,
   multipleStatements: false
 });
 
