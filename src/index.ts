@@ -76,7 +76,8 @@ import VersionModel from './versionModel.js';
 const packagingDatabase = new JobDatabase<PackagingInfo>(JobType.Packaging, async j => {
   await VersionModel
     .findOneAndUpdate({
-      ...j,
+      packageId: j.packageId,
+      version: j.version,
       status: 'processing'
     }, {
       status: 'failed_server'
