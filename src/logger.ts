@@ -12,7 +12,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied limitations under the License.
  */
-import {pino} from 'pino';
+import { pino } from 'pino';
 
 const logger = pino({
   level: 'debug'

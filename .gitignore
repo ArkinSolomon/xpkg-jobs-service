@@ -4,6 +4,9 @@ node_modules/
 .vscode/
 out/
 /data.json
-.DS_STORE
+**/.DS_Store
 databases/
 keys/
+
+# PM2 configuration file
+ecosystem.config.cjs

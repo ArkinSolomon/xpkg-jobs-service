@@ -113,7 +113,7 @@ const ONE_HOUR_MS = 60 * 60 * 1000;
 const THREE_HOUR_MS = 3 * ONE_HOUR_MS;
 
 // We want to give a chance for all jobs to be claimed
-setTimeout(() => {
+setTimeout(async () => {
   logger.info('Allowing package jobs to be aborted');
   setInterval(async function(){
     const packagingJobs = await packagingDatabase.getAllJobsWithTime();
@@ -153,6 +153,18 @@ setTimeout(() => {
       }, 250);
     } 
   }, ONE_HOUR_MS / 2);
+
+  // Register any jobs that were never registered with the jobs service
+  const processingVersions = await VersionModel.find({
+    status: 'processing'
+  }).exec();
+
+  for (const processingVersion of processingVersions) {
+    packagingDatabase.addJob({
+      packageId: processingVersion.packageId,
+      version: processingVersion.version
+    });
+  }
 }, 90000);
 
 io.on('connection', client => {

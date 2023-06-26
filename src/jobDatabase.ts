@@ -79,18 +79,17 @@ export default class JobDatabase<T extends object> {
   }
 
   /**
-   * Add a job to the database.
+   * Add a job to the database if it does not exist. Nothing is changed if the job exists.
    * 
    * @param {T} jobData The job to add.
    * @returns {Promise<void>} A promise which is resolved after the job has been saved.
    */
   async addJob(jobData: T): Promise<void> {
     logger.debug(jobData, 'Adding job');
-    const job = new this._JobModel({
+    await this._JobModel.updateOne({ jobData }, {
       startTime: new Date(),
       jobData
-    });
-    await job.save();
+    }, { upsert: true }).exec();
     logger.debug(jobData, 'Added job');
   }
 
