@@ -312,7 +312,7 @@ io.on('connection', client => {
   client.emit('handshake', process.env.SERVER_TRUST_KEY);
 });
 
-const port = process.env.PORT || 5027;
+const port = process.env.PORT || 443;
 server.listen(port, () => {
   logger.info(`X-Pkg jobs service is up on port ${port}`);
 });
