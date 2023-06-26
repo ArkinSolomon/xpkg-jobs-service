@@ -152,7 +152,7 @@ setTimeout(async () => {
         client.client.disconnect();
       }, 250);
     } 
-  }, ONE_HOUR_MS / 2);
+  }, 1000);
 
   // Register any jobs that were never registered with the jobs service
   const processingVersions = await VersionModel.find({
@@ -165,7 +165,7 @@ setTimeout(async () => {
       version: processingVersion.version
     });
   }
-}, 90000);
+}, 10000);
 
 io.on('connection', client => {
   const clientLogger = logger.child({ ip: client.conn.remoteAddress });
