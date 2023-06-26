@@ -64,7 +64,8 @@ dotenv.config();
 import logger from './logger.js';
 logger.info('X-Pkg jobs service starting');
 
-import http from 'http';
+import fs from 'fs/promises';
+import https from 'https';
 import Express from 'express';
 import {Server, Socket} from 'socket.io';
 import hasha from 'hasha';
@@ -84,7 +85,14 @@ const packagingDatabase = new JobDatabase<PackagingInfo>(JobType.Packaging, asyn
 });
 
 const app = Express();
-const server = http.createServer(app);
+const [key, cert, ca] = await Promise.all([
+  fs.readFile(process.env.HTTPS_KEY_PATH as string, 'utf8'),
+  fs.readFile(process.env.HTTPS_CERT_PATH as string, 'utf8'),
+  fs.readFile(process.env.HTTPS_CHAIN_PATH as string, 'utf8'),
+]);
+const server = https.createServer({
+  key, cert, ca
+}, app);
 const io = new Server(server);
 
 // If all jobs are not reclaimed within 10 minutes of boot set them to being failed
