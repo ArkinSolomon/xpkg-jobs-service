@@ -43,7 +43,7 @@ type JobData = {
  * @property {string} packageId The id of the package being processed.
  * @property {string} version The version of the package being processed.
  */
-export type PackagingInfo = {
+type PackagingInfo =  { 
   packageId: string;
   version: string;
 }
@@ -54,30 +54,43 @@ export type PackagingInfo = {
  * @typedef {Object} ResourceInfo
  * @property {string} resourceId The id of the resource being processed.
  */
-export type ResourceInfo = {
+type ResourceInfo = {
   resourceId: string;
 };
 
 import dotenv from 'dotenv';
 dotenv.config();
 
+import logger from './logger.js';
+logger.info('X-Pkg jobs service starting');
+
 import http from 'http';
 import Express from 'express';
 import {Server, Socket} from 'socket.io';
-import logger from './logger.js';
 import hasha from 'hasha';
-import * as jobDatabase from './jobDatabase.js';
+import JobDatabase from './jobDatabase.js';
 import JobClaimer from './jobClaimer.js';
+import VersionModel from './versionModel.js';
 
-logger.info('X-Pkg jobs service starting');
+const packagingDatabase = new JobDatabase<PackagingInfo>(JobType.Packaging, async j => {
+  await VersionModel
+    .findOneAndUpdate({
+      ...j,
+      status: 'processing'
+    }, {
+      status: 'failed_server'
+    })
+    .exec();
+});
 
 const app = Express();
 const server = http.createServer(app);
 const io = new Server(server);
 
 // If all jobs are not reclaimed within 10 minutes of boot set them to being failed
-const unclaimedPackagingJobs = await jobDatabase.getAllPackagingJobs();
-const packagingJobClaimer = new JobClaimer(JobType.Packaging, unclaimedPackagingJobs);
+const unclaimedPackagingJobs = await packagingDatabase.getAllJobsWithTime();
+const packagingJobClaimer = new JobClaimer<PackagingInfo>(unclaimedPackagingJobs, (job1, job2) => job1.packageId === job2.packageId && job1.version === job2.version, packagingDatabase);
+
 if (!unclaimedPackagingJobs.length)
   logger.info('No unclaimed packaging jobs');
 else if (unclaimedPackagingJobs.length === 1)
@@ -95,7 +108,7 @@ const THREE_HOUR_MS = 3 * ONE_HOUR_MS;
 setTimeout(() => {
   logger.info('Allowing package jobs to be aborted');
   setInterval(async function(){
-    const packagingJobs = await jobDatabase.getAllPackagingJobs();
+    const packagingJobs = await packagingDatabase.getAllJobsWithTime();
     const abortJobs = packagingJobs.filter(({ startTime: t }) => t.getTime() < Date.now() - THREE_HOUR_MS);
 
     for (const abortJob of abortJobs) {
@@ -106,15 +119,12 @@ setTimeout(() => {
       const client = packagingClients.find(c => (c.jobData.info as PackagingInfo).packageId === abortJob.packageId && (c.jobData.info as PackagingInfo).version === abortJob.version);
       
       // Try to fail it, no worries if it just happened to complete in that short time
-      if (!client) {
-        abortLogger.info('Could not abort job, no client found, failing instead');
-        await jobDatabase.failPackagingJob(abortJob.packageId, abortJob.version);
-        continue;
-      }
-
-      if (!client.client.connected) {
-        abortLogger.info('Could not abort job, client found but not connected, failing instead');
-        await jobDatabase.failPackagingJob(abortJob.packageId, abortJob.version);
+      if (!client || !client.client.connected) {
+        if (client)
+          abortLogger.info('Could not abort job, client found but not connected, failing instead');
+        else
+          abortLogger.info('Could not abort job, no client found, failing instead');
+        await packagingDatabase.failJob(abortJob);
         continue;
       }
 
@@ -144,7 +154,8 @@ io.on('connection', client => {
   let authorized = false;
   let jobDone = false;
 
-  let jobData: JobData | undefined;
+  let jobType: JobType | undefined;
+  let jobInfo: ResourceInfo | PackagingInfo;
 
   client.on('handshake', password => {
     if (!password || typeof password !== 'string') {
@@ -171,23 +182,39 @@ io.on('connection', client => {
       return;
     }
 
-    jobData = data;
+    if (!data || !data.jobType) {
+      client.disconnect();
+      if (data)
+        logger.warn('Client did not send job type with job data');
+      else
+        logger.warn('Client did not send job data with job_data event');
+      return;
+    }
+
+    jobType = data.jobType;
     clientLogger.setBindings(data);
     clientLogger.info('Client data recieved');
 
     switch (data.jobType) {
     case JobType.Packaging: {
-      const jobInfo = data.info as PackagingInfo;
+        
+      // We do not know if these are the only keys provided, so only select them
+      let sentJobInfo = data.info as PackagingInfo;
+      sentJobInfo = {
+        packageId: sentJobInfo.packageId,
+        version: sentJobInfo.version
+      };
+      jobInfo = sentJobInfo;
       
-      if (!jobInfo.packageId || typeof jobInfo.packageId !== 'string' || !jobInfo.version || typeof jobInfo.version !== 'string')
+      if (!sentJobInfo.packageId || typeof sentJobInfo.packageId !== 'string' || !sentJobInfo.version || typeof sentJobInfo.version !== 'string')
       {
         client.disconnect();
         clientLogger.error('Client attempted to send invalid packaging job data');
         return;
       }
 
-      await jobDatabase.addPackagingJob(jobInfo.packageId, jobInfo.version);
-      packagingJobClaimer.tryClaimJob(data.info);
+      await packagingDatabase.addJob(sentJobInfo);
+      packagingJobClaimer.tryClaimJob(sentJobInfo);
       break;
     }
     // case JobType.Resource:
@@ -199,14 +226,18 @@ io.on('connection', client => {
       return;
     }
 
-    clients.push({jobData, client});
+    clients.push({
+      jobData: {
+        jobType,
+        info: jobInfo
+      }, client});
     clientLogger.info('Job registered on database');
     client.emit('job_data_recieived');
   });
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   client.on('done', async reason => {
-    if (!authorized || !jobData) {
+    if (!authorized || !jobInfo || !jobType) {
       client.disconnect();
       clientLogger.info('Client attempted to state job completed without authorization, or with no job data');
       return;
@@ -215,10 +246,9 @@ io.on('connection', client => {
     jobDone = true;
     clientLogger.info(`Worker stating job completed (${reason})`);
 
-    switch (jobData.jobType) {
+    switch (jobType) {
     case JobType.Packaging: {
-      const jobInfo = jobData.info as PackagingInfo;
-      await jobDatabase.completePackagingJob(jobInfo.packageId, jobInfo.version);
+      await packagingDatabase.removeJob(jobInfo as PackagingInfo);
       break;
     }
     // case JobType.Resource:
@@ -242,7 +272,7 @@ io.on('connection', client => {
       return;
     }
 
-    if (!jobData) {
+    if (!jobInfo || !jobType) {
       clientLogger.info(`Disconnected without sending jobs data (${reason})`);
       return;
     }
@@ -259,11 +289,9 @@ io.on('connection', client => {
     }
 
     clientLogger.info(`Unexpected disconnect, attempting to set job as failure (${reason})`);
-    let didFail;
-    switch (jobData.jobType) {
+    switch (jobType) {
     case JobType.Packaging: {
-      const jobInfo = jobData.info as PackagingInfo;
-      didFail = await jobDatabase.failPackagingJob(jobInfo.packageId, jobInfo.version);
+      packagingDatabase.failJob(jobInfo as PackagingInfo);
       break;
     }
     // case JobType.Resource:
@@ -277,10 +305,7 @@ io.on('connection', client => {
       return;
     }
 
-    if (didFail)
-      clientLogger.info('Failed job');
-    else
-      clientLogger.info('Job already had different status, was not failed');
+    clientLogger.info('Tried to fail job');
   });
 
   // Dual password authorization for extra security

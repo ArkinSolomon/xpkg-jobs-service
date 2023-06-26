@@ -13,31 +13,43 @@
  * either express or implied limitations under the License.
  */
 
-import { JobType, PackagingInfo, ResourceInfo } from './index.js';
-import * as jobDatabase from './jobDatabase.js';
+/**
+ * Compare two jobs, and determine if they are equal.
+ * 
+ * @callback JobComparer
+ * @template T
+ * @param {T} job1 The first job to compare.
+ * @param {T} job2 The second job to compare.
+ * @returns {boolean} True if the jobs are equal, or false otherwise.
+ */
+type JobComparer<T> = (job1: T, job2: T) => boolean;
+
+import JobDatabase from './jobDatabase.js';
 import logger from './logger.js';
 
 /**
  * An instance of this class manages claiming jobs for a single type of job.
+ * 
+ * @template T
  */
-export default class JobClaimer {
+export default class JobClaimer<T extends object> {
   
-  private _jobType: JobType;
-  private _jobList: (PackagingInfo | ResourceInfo)[];
+  private _jobList: T[];
+  private _jobComparer: JobComparer<T>;
 
-  private _claimedJobs: (PackagingInfo | ResourceInfo)[] = [];
-
-  private _locked = false;
+  private _claimedJobs: T[] = [];
+  private _locked = false;  
 
   /**
    * Create a new claimer with a list of jobs that can be claimed. Automatically starts the timer to fail unclaimed jobs.
    * 
    * @constructor
-   * @param {JobType} jobType The type of jobs this claimer can claim.
-   * @param {(PackagingInfo|ResourceInfo)[]} jobList The list of jobs that are available to be claimed.
+   * @param {T[]} jobList The list of jobs that are available to be claimed.
+   * @param {JobComparer<T>} comparer The function to compare two jobs and determine if they are equal.
+   * @param {JobDatabase<T>} jobDatabase The database that is keeping track of these jobs.
    */
-  constructor(jobType: JobType, jobList: (PackagingInfo | ResourceInfo)[]) {
-    this._jobType = jobType;
+  constructor(jobList: T[], jobComparer: JobComparer<T>, jobDatabase: JobDatabase<T>) {
+    this._jobComparer = jobComparer;
     this._jobList = jobList;
 
     if (this._jobList.length) {
@@ -46,37 +58,13 @@ export default class JobClaimer {
 
         // We shouldn't have *that* many jobs so it should be fine to do this
         for (const job of this._jobList) {
-          const index = this._claimedJobs.findIndex(j => this._doJobsMatch(j, job));
+          const index = this._claimedJobs.findIndex(j => this._jobComparer(j, job));
           if (index > -1) {
             this._claimedJobs.splice(index, 1);
-
-            switch (this._jobType) {
-            case JobType.Packaging: 
-              logger.info(job, 'Packaging job claimed');
-              break;
-            case JobType.Resource:
-              logger.info(job, 'Resource job claimed');
-              break;
-            default:
-              throw new Error('Invalid job type (can not log claimed job)');
-            }
-          }
-          else {
-
-            // Fail the job based on its type
-            switch (this._jobType) {
-            case JobType.Packaging: {
-              const j = job as PackagingInfo;
-              logger.info(j, 'Failing unclaimed packaging job');
-              await jobDatabase.failPackagingJob(j.packageId, j.version);
-              break;
-            }
-            case JobType.Resource:
-              //TODO
-              break;
-            default:
-              throw new Error('Invalid job type (can not fail unclaimed jobs)');
-            }
+            logger.info(job, 'Claimed job');
+          } else {
+            await jobDatabase.failJob(job);
+            logger.info(job, 'Failed job');
           }
         }
       }, 60000);
@@ -84,39 +72,14 @@ export default class JobClaimer {
   }
 
   /**
+   * Try to claim a job.
    * 
-   * 
-   * @param {PackagingInfo|ResourceInfo} jobInfo The information of the job to claim.
+   * @param {T} jobInfo The information of the job to claim.
    */
-  tryClaimJob(jobInfo: PackagingInfo | ResourceInfo): void {
+  tryClaimJob(jobInfo: T): void {
     if (this._locked)
       return;
     
     this._claimedJobs.push(jobInfo);
-  }
-
-  /**
-   * Compare two jobs and determine if they are equal.
-   * 
-   * @param {PackagingInfo|ResourceInfo} job1 The first job to compare.
-   * @param {PackagingInfo|ResourceInfo} job2 The second job to compare.
-   * @returns {boolean} True if the jobs are the same.
-   */
-  private _doJobsMatch(job1: PackagingInfo | ResourceInfo, job2: PackagingInfo | ResourceInfo): boolean {
-    switch (this._jobType) {
-    case JobType.Packaging:
-    {
-      const j1 = job1 as PackagingInfo;
-      const j2 = job2 as PackagingInfo;
-      return j1.packageId === j2.packageId && j1.version === j2.version;
-    }
-    case JobType.Resource: {
-      const j1 = job1 as ResourceInfo;
-      const j2 = job2 as ResourceInfo;
-      return j1.resourceId === j2.resourceId;
-    }
-    default:
-      throw new Error('Invalid job type (can not match)');
-    }
   }
 }

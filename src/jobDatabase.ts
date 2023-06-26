@@ -13,97 +13,136 @@
  * either express or implied limitations under the License.
  */
 
-import mysql from 'mysql2';
-import { PackagingInfo } from './index.js';
+interface Job<T extends object> {
+  startTime: Date;
+  jobData: T;
+}
 
-const pool = mysql.createPool({
-  connectionLimit: 10,
-  host: process.env.DB_ADDR,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  multipleStatements: false
-});
+import mongoose, { Model, Schema } from 'mongoose';
+import logger from './logger.js';
+import { JobType } from './index.js';
 
-/**
- * Execute a query string.
- * 
- * @param {string} queryString The query string to execute.
- * @returns {Promise<unknown[]>} A promise which resolves to the result of the query data, or rejects if the operation fails.
- */
-function query(queryString: string): Promise<unknown[]> {
-  return new Promise((resolve, reject) => {
-    pool.getConnection((err, connection) => {
-      if (err)
-        return reject(err);
-
-      connection.query(queryString, (err, data) => {
-        connection.release();
-        if (err)
-          return reject(err);
-
-        resolve(data as unknown[]);
-      });
-      connection.on('error', reject);
-    });
+try {
+  await mongoose.connect(`mongodb+srv://${process.env.MONGODB_IP}/?authSource=%24external&authMechanism=MONGODB-X509` as string, {
+    sslValidate: true,
+    tlsCertificateKeyFile: process.env.MONGODB_KEY_PATH,
+    authMechanism: 'MONGODB-X509',
+    authSource: '$external'
   });
+  logger.info('Connected to MongoDB Atlas');
+} catch (e) {
+  logger.fatal(e);
+  process.exit(1);
 }
 
-/**
- * Register a job that packages a specific package at a version.
- * 
- * @async
- * @param {string} packageId The id of the package being packaged.
- * @param {string} version The version being packaged.
- * @returns {Promise<void>} A promise which resolves if the operation completes successfully.
- */
-export async function addPackagingJob(packageId: string, version: string): Promise<void> {
-  await query(mysql.format('INSERT INTO package_processing_jobs (packageId, version) VALUES (?, ?);', [packageId, version]));
-}
+const jobDB = mongoose.connection.useDb('jobs');
 
 /**
- * Complete a packaging job.
+ * An instance of this class represents a collection for a specific job type.
  * 
- * @async
- * @param {string} packageId The id of the package who's job is complete.
- * @param {string} version The version of the package who's job is complete.
- * @returns {Promise<void>} A promise which resolves if the operation completes successfully.
+ * @template T
  */
-export async function completePackagingJob(packageId: string, version: string) {
-  return query(mysql.format('DELETE FROM package_processing_jobs WHERE packageId=? AND version=?;', [packageId, version]));
-}
+export default class JobDatabase<T extends object> {
 
-/**
- * Fail a packaging job.
- * 
- * @async
- * @param {string} packageId The id of the package who's job is being failed.
- * @param {string} version The version of the package who's job is being failed.
- * @returns {Promise<boolean>} A promise which resolves to true if the job was set as failed, or false if a different status was already inserted into the database.
- */
-export async function failPackagingJob(packageId: string, version: string): Promise<boolean> {
-  const [, status] = await Promise.all([
-    completePackagingJob(packageId, version),
-    query(mysql.format('SELECT status FROM versions WHERE packageId=? AND version=? LIMIT 1;', [packageId, version]))
-  ]);
+  private _jobType: JobType;
 
-  // We always expect the job to be there, so this shouldn't fail
-  const jobStatus = (status as { status: string; }[])[0].status;
+  private _internalSchema: Schema<Job<T>>;
+  private _JobModel: Model<Job<T>>;
 
-  // Only update the job if it's processing, otherwise assume it's finished
-  if (jobStatus === 'processing') {
-    await query(mysql.format('UPDATE versions SET status=? WHERE packageId=? AND version=?;', ['failed_server', packageId, version]));
-    return true;
+  private _failJob: (jobData: T) => Promise<void>;
+
+  /**
+   * Create a new database (a MongoDB collection) for a specific type of job.
+   * 
+   * @constructor
+   * @param {JobType} jobType The type of job this database is for.
+   * @param {(T) => Promise<void>} failJob The function that executes when the job fails.
+   */
+  constructor(jobType: JobType, failJob: (jobData: T) => Promise<void>) {
+    this._jobType = jobType;
+    this._failJob = failJob;
+
+    this._internalSchema = new Schema<Job<T>>({
+      startTime: {
+        type: Date,
+        required: true
+      },
+      jobData: {
+        type: Schema.Types.Mixed,
+        required: true
+      }
+    }, {
+      collection: this._jobType
+    });
+
+    this._JobModel = jobDB.model<Job<T>>(this._jobType, this._internalSchema);
   }
-  return false;
-}
 
-/**
- * Get all packaging jobs.
- * 
- * @async
- * @returns {Promise<(PackagingInfo & {startTime: Date})[]>} A promise which resolves to all of hte information of all packaging jobs.
- */
-export async function getAllPackagingJobs(): Promise<(PackagingInfo & {startTime: Date})[]> {
-  return (await query('SELECT packageId, version, startTime FROM package_processing_jobs;')) as (PackagingInfo & {startTime: Date})[];
+  /**
+   * Add a job to the database.
+   * 
+   * @param {T} jobData The job to add.
+   * @returns {Promise<void>} A promise which is resolved after the job has been saved.
+   */
+  async addJob(jobData: T): Promise<void> {
+    logger.debug(jobData, 'Adding job');
+    const job = new this._JobModel({
+      startTime: new Date(),
+      jobData
+    });
+    await job.save();
+    logger.debug(jobData, 'Added job');
+  }
+
+  /**
+   * Remove a job.
+   * 
+   * @param {T} jobData The job to remove.
+   * @returns {Promise<void>} A promise which is resolved after the job has been removed.
+   */
+  async removeJob(jobData: T): Promise<void> {
+    logger.debug(jobData, 'Removing job');
+    await this._JobModel.findOneAndRemove({
+      jobData,
+    }).exec();
+    logger.debug(jobData, 'Removed job');
+  }
+
+  /**
+   * Remove a job from the database, and set its status to failed.
+   * 
+   * @param {T} jobData The job to fail.
+   * @returns {Promise<void>} A promise which is resolved after the job has been failed. 
+   */
+  async failJob(jobData: T): Promise<void> {
+    logger.debug(jobData, 'Failing job');
+
+    await Promise.all([
+      this.removeJob(jobData),
+      this._failJob(jobData)
+    ]);
+
+    logger.debug(jobData, 'Failed job');
+  }
+
+  /**
+   * Get all jobs of this type (with the time).
+   * 
+   * @returns {Promise<(T & {startTime: Date;})[]>} All jobs of this type, with the start time.
+   */
+  async getAllJobsWithTime(): Promise<(T & { startTime: Date; })[]> {
+    logger.debug('Getting all jobs with time');
+    const jobs = await this._JobModel
+      .find()
+      .select('-_id -__v')
+      .lean()
+      .exec();
+    
+    const ret = (jobs as Array<Job<T>>).map(j => ({
+      startTime: j.startTime,
+      ...j.jobData
+    }));
+    logger.debug(ret, 'Got all jobs with time');
+    return ret;
+  }
 }

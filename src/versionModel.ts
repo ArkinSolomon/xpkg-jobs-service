@@ -12,9 +12,27 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied limitations under the License.
  */
-import {pino} from 'pino';
 
-const logger = pino({
-  level: 'debug'
+import mongoose, { Schema } from 'mongoose';
+
+// Partial schema since this is all we use in the version database
+const versionSchema = new Schema({
+  packageId: {
+    type: String,
+    required: true
+  },
+  version: {
+    type: String,
+    required: true
+  },
+  status: {
+    type: String,
+    required: true,
+  },
+}, {
+  collection: 'versions'
 });
-export default logger;
+
+const versionDB = mongoose.connection.useDb('packages');
+const VersionModel = versionDB.model('version', versionSchema);
+export default VersionModel;
