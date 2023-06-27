@@ -96,14 +96,15 @@ const server = https.createServer({
 }, app);
 const io = new Server(server);
 
-// If all jobs are not reclaimed within 10 minutes of boot set them to being failed
+const packagingComparer = (job1: PackagingInfo, job2: PackagingInfo) => job1.packageId === job2.packageId && job1.version === job2.version;
+
 const unclaimedPackagingJobs = (await packagingDatabase.getAllJobsWithTime()).map(j => (
   <PackagingInfo>{
     packageId: j.packageId,
     version: j.version
   }
 ));
-const packagingJobClaimer = new JobClaimer<PackagingInfo>(unclaimedPackagingJobs, (job1, job2) => job1.packageId === job2.packageId && job1.version === job2.version, packagingDatabase);
+const packagingJobClaimer = new JobClaimer<PackagingInfo>(unclaimedPackagingJobs, packagingComparer, packagingDatabase);
 
 if (!unclaimedPackagingJobs.length)
   logger.info('No unclaimed packaging jobs');
@@ -120,62 +121,23 @@ const THREE_HOUR_MS = 3 * ONE_HOUR_MS;
 
 // We want to give a chance for all jobs to be claimed
 setTimeout(async () => {
-  logger.info('Allowing package jobs to be aborted');
-  setInterval(async function(){
-    const packagingJobs = await packagingDatabase.getAllJobsWithTime() as (PackagingInfo & { startTime?: Date })[];
-    
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    const abortJobs = packagingJobs.filter(({ startTime: t }) => t!.getTime() < Date.now() - THREE_HOUR_MS);
-
-    for (const abortJob of abortJobs) {
-      const abortLogger = logger.child(abortJob);
-
-      // Since we're awaiting, we have to filter again every loop
-      const packagingClients = clients.filter(c => c.jobData.jobType == JobType.Packaging);
-      const client = packagingClients.find(c => (c.jobData.info as PackagingInfo).packageId === abortJob.packageId && (c.jobData.info as PackagingInfo).version === abortJob.version);
-      
-      delete abortJob.startTime;
-
-      // Try to fail it, no worries if it just happened to complete in that short time
-      if (!client || !client.client.connected) {
-        if (client)
-          abortLogger.info('Could not abort job, client found but not connected, failing instead');
-        else
-          abortLogger.info('Could not abort job, no client found, failing instead');
-        await packagingDatabase.failJob(abortJob);
-        continue;
-      }
-
-      abortLogger.warn('Aborting job');
-      client.client.emit('abort');
-      
-      let aborted = false;
-      client.client.once('aborting', () => {
-        aborted = true;
-        abortLogger.info('Worker is aborting job');
-      });
-
-      setTimeout(() => {
-        if (aborted)
-          return;
-        abortLogger.info('Disconnecting worker that is not aborting job');
-        client.client.disconnect();
-      }, 2000);
-    } 
-  }, ONE_HOUR_MS / 2);
+  logger.info('Allowing jobs to be aborted');
+  setInterval(createJobAborter(JobType.Packaging, packagingDatabase, packagingComparer), ONE_HOUR_MS / 2);
 
   // Register any jobs that were never registered with the jobs service
-  const processingVersions = await VersionModel.find({
-    status: 'processing'
-  })
-    .exec();
+  setInterval(async () => {
+    const processingVersions = await VersionModel.find({
+      status: 'processing'
+    })
+      .exec();
 
-  for (const processingVersion of processingVersions) {
-    packagingDatabase.addJob({
-      packageId: processingVersion.packageId,
-      version: processingVersion.version
-    });
-  }
+    for (const processingVersion of processingVersions) {
+      await packagingDatabase.addJob({
+        packageId: processingVersion.packageId,
+        version: processingVersion.version
+      });
+    }
+  }, ONE_HOUR_MS);
 }, 90000);
 
 io.on('connection', client => {
@@ -299,12 +261,12 @@ io.on('connection', client => {
 
   client.on('disconnect', async reason => {
     if (!authorized) {
-      clientLogger.info(`Unauthorized socket disconnected (${reason})`);
+      clientLogger.warn(`Unauthorized socket disconnected (${reason})`);
       return;
     }
 
     if (!jobInfo || !jobType) {
-      clientLogger.info(`Disconnected without sending jobs data (${reason})`);
+      clientLogger.warn(`Client disconnected without sending jobs data (${reason})`);
       return;
     }
 
@@ -319,7 +281,7 @@ io.on('connection', client => {
       return;
     }
 
-    clientLogger.info(`Unexpected disconnect, attempting to set job as failure (${reason})`);
+    clientLogger.info(`Unexpected worker disconnect, attempting to set job as failure (${reason})`);
     switch (jobType) {
     case JobType.Packaging: {
       packagingDatabase.failJob(jobInfo as PackagingInfo);
@@ -353,3 +315,57 @@ const port = process.env.PORT || 443;
 server.listen(port, () => {
   logger.info(`X-Pkg jobs service is up on port ${port}`);
 });
+
+/**
+ * Create a new asynchronous function that will try to abort all jobs that take too long for a specific job database
+ * 
+ * @template T 
+ * @param {JobType} jobType The type of job to abort.
+ * @param {JobDatabase<T>} abortDatabase The database which contains the jobs to abort.
+ * @param {(T, T) => boolean} comparer The function which compares two jobs and determines if they are equivalent. Returns true if they are, or false otherwise.
+ * @returns {() => Promise<void>} An asynchronous that will abort all jobs (or fail them) when run.
+ */
+function createJobAborter<T extends object>(jobType: JobType, abortDatabase: JobDatabase<T>, comparer: (job1: T, job2: T) => boolean): () => Promise<void> {
+  return async function () {
+    const jobs = await abortDatabase.getAllJobsWithTime() as (T & { startTime?: Date })[];
+    
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const abortJobs = jobs.filter(({ startTime: t }) => t!.getTime() < Date.now() - THREE_HOUR_MS);
+
+    for (const abortJob of abortJobs) {
+      const abortLogger = logger.child(abortJob);
+
+      // Since we're awaiting, we have to filter again every loop
+      const jobClients = clients.filter(c => c.jobData.jobType == jobType);
+      const client = jobClients.find(c => comparer(c.jobData.info as T, abortJob));
+      
+      delete abortJob.startTime;
+
+      // Try to fail it, no worries if it just happened to complete in that short time
+      if (!client || !client.client.connected) {
+        if (client)
+          abortLogger.info('Could not abort job, client found but not connected, failing instead');
+        else
+          abortLogger.info('Could not abort job, no client found, failing instead');
+        await abortDatabase.failJob(abortJob);
+        continue;
+      }
+
+      abortLogger.warn('Aborting job');
+      client.client.emit('abort');
+      
+      let aborted = false;
+      client.client.once('aborting', () => {
+        aborted = true;
+        abortLogger.info('Worker is aborting job');
+      });
+
+      setTimeout(() => {
+        if (aborted)
+          return;
+        abortLogger.info('Disconnecting worker that is not aborting job');
+        client.client.disconnect();
+      }, 5000);
+    }
+  };
+}
