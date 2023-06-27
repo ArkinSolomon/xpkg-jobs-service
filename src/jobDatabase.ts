@@ -21,6 +21,7 @@ interface Job<T extends object> {
 import mongoose, { Model, Schema } from 'mongoose';
 import logger from './logger.js';
 import { JobType } from './index.js';
+import { Logger } from 'pino';
 
 try {
   await mongoose.connect(`mongodb+srv://${process.env.MONGODB_IP}/?authSource=%24external&authMechanism=MONGODB-X509` as string, {
@@ -45,6 +46,7 @@ const jobDB = mongoose.connection.useDb('jobs');
 export default class JobDatabase<T extends object> {
 
   private _jobType: JobType;
+  private _dbLogger: Logger;
 
   private _internalSchema: Schema<Job<T>>;
   private _JobModel: Model<Job<T>>;
@@ -61,6 +63,9 @@ export default class JobDatabase<T extends object> {
   constructor(jobType: JobType, failJob: (jobData: T) => Promise<void>) {
     this._jobType = jobType;
     this._failJob = failJob;
+    this._dbLogger = logger.child({
+      type: this._jobType
+    });
 
     this._internalSchema = new Schema<Job<T>>({
       startTime: {
@@ -85,12 +90,12 @@ export default class JobDatabase<T extends object> {
    * @returns {Promise<void>} A promise which is resolved after the job has been saved.
    */
   async addJob(jobData: T): Promise<void> {
-    logger.debug(jobData, 'Adding job');
+    this._dbLogger.debug(jobData, 'Adding job');
     await this._JobModel.updateOne({ jobData }, {
       startTime: new Date(),
       jobData
     }, { upsert: true }).exec();
-    logger.debug(jobData, 'Added job');
+    this._dbLogger.debug(jobData, 'Added job');
   }
 
   /**
@@ -100,11 +105,11 @@ export default class JobDatabase<T extends object> {
    * @returns {Promise<void>} A promise which is resolved after the job has been removed.
    */
   async removeJob(jobData: T): Promise<void> {
-    logger.debug(jobData, 'Removing job');
+    this._dbLogger.debug(jobData, 'Removing job');
     await this._JobModel.findOneAndRemove({
       jobData,
     }).exec();
-    logger.debug(jobData, 'Removed job');
+    this._dbLogger.debug(jobData, 'Removed job');
   }
 
   /**
@@ -114,23 +119,40 @@ export default class JobDatabase<T extends object> {
    * @returns {Promise<void>} A promise which is resolved after the job has been failed. 
    */
   async failJob(jobData: T): Promise<void> {
-    logger.debug(jobData, 'Failing job');
+    this._dbLogger.debug(jobData, 'Failing job');
 
     await Promise.all([
       this.removeJob(jobData),
       this._failJob(jobData)
     ]);
 
-    logger.debug(jobData, 'Failed job');
+    this._dbLogger.debug(jobData, 'Failed job');
   }
 
   /**
-   * Get all jobs of this type (with the time).
+   * Get all jobs of this type (without the start time).
+   * 
+   * @returns {Promise<T[]>} A promise which resolves to the start time of this job.
+   */
+  async getAllJobs(): Promise<T[]> {
+    this._dbLogger.debug('Getting all jobs');
+    const jobs = await this._JobModel
+      .find()
+      .select('jobData')
+      .lean()
+      .exec();
+  
+    this._dbLogger.debug('Got all jobs');
+    return jobs.map(j => j.jobData as T);
+  }
+
+  /**
+   * Get all jobs of this type (with the start time).
    * 
    * @returns {Promise<(T & {startTime: Date;})[]>} All jobs of this type, with the start time.
    */
   async getAllJobsWithTime(): Promise<(T & { startTime: Date; })[]> {
-    logger.debug('Getting all jobs with time');
+    this._dbLogger.debug('Getting all jobs with time');
     const jobs = await this._JobModel
       .find()
       .select('-_id -__v')
@@ -141,7 +163,7 @@ export default class JobDatabase<T extends object> {
       startTime: j.startTime,
       ...j.jobData
     }));
-    logger.debug(ret, 'Got all jobs with time');
+    this._dbLogger.debug('Got all jobs with time');
     return ret;
   }
 }
