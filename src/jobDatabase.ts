@@ -64,7 +64,7 @@ export default class JobDatabase<T extends object> {
     this._jobType = jobType;
     this._failJob = failJob;
     this._dbLogger = logger.child({
-      type: this._jobType
+      jobDbType: this._jobType
     });
 
     this._internalSchema = new Schema<Job<T>>({

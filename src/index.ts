@@ -339,8 +339,14 @@ io.on('connection', client => {
     clientLogger.info('Tried to fail job');
   });
 
-  // Dual password authorization for extra security
   client.emit('handshake', process.env.SERVER_TRUST_KEY);
+
+  setTimeout(() => {
+    if (authorized && jobInfo)
+      return;
+    clientLogger.warn('Client not authorized or did not send job information within 30 seconds, disconnecting');
+    client.disconnect();
+  }, 30000);
 });
 
 const port = process.env.PORT || 443;
