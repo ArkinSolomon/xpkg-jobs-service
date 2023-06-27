@@ -97,7 +97,12 @@ const server = https.createServer({
 const io = new Server(server);
 
 // If all jobs are not reclaimed within 10 minutes of boot set them to being failed
-const unclaimedPackagingJobs = await packagingDatabase.getAllJobsWithTime();
+const unclaimedPackagingJobs = (await packagingDatabase.getAllJobsWithTime()).map(j => (
+  <PackagingInfo>{
+    packageId: j.packageId,
+    version: j.version
+  }
+));
 const packagingJobClaimer = new JobClaimer<PackagingInfo>(unclaimedPackagingJobs, (job1, job2) => job1.packageId === job2.packageId && job1.version === job2.version, packagingDatabase);
 
 if (!unclaimedPackagingJobs.length)
@@ -117,8 +122,10 @@ const THREE_HOUR_MS = 3 * ONE_HOUR_MS;
 setTimeout(async () => {
   logger.info('Allowing package jobs to be aborted');
   setInterval(async function(){
-    const packagingJobs = await packagingDatabase.getAllJobsWithTime();
-    const abortJobs = packagingJobs.filter(({ startTime: t }) => t.getTime() < Date.now() - THREE_HOUR_MS);
+    const packagingJobs = await packagingDatabase.getAllJobsWithTime() as (PackagingInfo & { startTime?: Date })[];
+    
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const abortJobs = packagingJobs.filter(({ startTime: t }) => t!.getTime() < Date.now() - THREE_HOUR_MS);
 
     for (const abortJob of abortJobs) {
       const abortLogger = logger.child(abortJob);
@@ -127,6 +134,8 @@ setTimeout(async () => {
       const packagingClients = clients.filter(c => c.jobData.jobType == JobType.Packaging);
       const client = packagingClients.find(c => (c.jobData.info as PackagingInfo).packageId === abortJob.packageId && (c.jobData.info as PackagingInfo).version === abortJob.version);
       
+      delete abortJob.startTime;
+
       // Try to fail it, no worries if it just happened to complete in that short time
       if (!client || !client.client.connected) {
         if (client)
@@ -151,14 +160,15 @@ setTimeout(async () => {
           return;
         abortLogger.info('Disconnecting worker that is not aborting job');
         client.client.disconnect();
-      }, 250);
+      }, 2000);
     } 
   }, ONE_HOUR_MS / 2);
 
   // Register any jobs that were never registered with the jobs service
   const processingVersions = await VersionModel.find({
     status: 'processing'
-  }).exec();
+  })
+    .exec();
 
   for (const processingVersion of processingVersions) {
     packagingDatabase.addJob({

@@ -63,8 +63,8 @@ export default class JobClaimer<T extends object> {
             this._claimedJobs.splice(index, 1);
             logger.info(job, 'Claimed job');
           } else {
+            logger.info(job, 'Failing unclaimed job');
             await jobDatabase.failJob(job);
-            logger.info(job, 'Failed job');
           }
         }
       }, 60000);
