@@ -92,8 +92,10 @@ export default class JobDatabase<T extends object> {
   async addJob(jobData: T): Promise<void> {
     this._dbLogger.debug(jobData, 'Adding job');
     await this._JobModel.updateOne({ jobData }, {
-      startTime: new Date(),
-      jobData
+      $setOnInsert: {
+        startTime: new Date(),
+        jobData
+      }
     }, { upsert: true }).exec();
     this._dbLogger.debug(jobData, 'Added job');
   }
