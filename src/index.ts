@@ -132,10 +132,12 @@ setTimeout(async () => {
       .exec();
 
     for (const processingVersion of processingVersions) {
-      await packagingDatabase.addJob({
+      const jobInfo = {
         packageId: processingVersion.packageId,
         version: processingVersion.version
-      });
+      };
+      logger.info(jobInfo, 'Registering unregistered job');
+      await packagingDatabase.addJob(jobInfo);
     }
   }, ONE_HOUR_MS);
 }, 90000);
