@@ -90,14 +90,14 @@ export default class JobDatabase<T extends object> {
    * @returns {Promise<void>} A promise which is resolved after the job has been saved.
    */
   async addJob(jobData: T): Promise<void> {
-    this._dbLogger.debug(jobData, 'Adding job');
+    this._dbLogger.trace(jobData, 'Adding job');
     await this._JobModel.updateOne({ jobData }, {
       $setOnInsert: {
         startTime: new Date(),
         jobData
       }
     }, { upsert: true }).exec();
-    this._dbLogger.debug(jobData, 'Added job');
+    this._dbLogger.trace(jobData, 'Added job');
   }
 
   /**
@@ -107,11 +107,11 @@ export default class JobDatabase<T extends object> {
    * @returns {Promise<void>} A promise which is resolved after the job has been removed.
    */
   async removeJob(jobData: T): Promise<void> {
-    this._dbLogger.debug(jobData, 'Removing job');
+    this._dbLogger.trace(jobData, 'Removing job');
     await this._JobModel.findOneAndRemove({
       jobData,
     }).exec();
-    this._dbLogger.debug(jobData, 'Removed job');
+    this._dbLogger.trace(jobData, 'Removed job');
   }
 
   /**
@@ -121,14 +121,14 @@ export default class JobDatabase<T extends object> {
    * @returns {Promise<void>} A promise which is resolved after the job has been failed. 
    */
   async failJob(jobData: T): Promise<void> {
-    this._dbLogger.debug(jobData, 'Failing job');
+    this._dbLogger.trace(jobData, 'Failing job');
 
     await Promise.all([
       this.removeJob(jobData),
       this._failJob(jobData)
     ]);
 
-    this._dbLogger.debug(jobData, 'Failed job');
+    this._dbLogger.trace(jobData, 'Failed job');
   }
 
   /**
@@ -137,14 +137,14 @@ export default class JobDatabase<T extends object> {
    * @returns {Promise<T[]>} A promise which resolves to the start time of this job.
    */
   async getAllJobs(): Promise<T[]> {
-    this._dbLogger.debug('Getting all jobs');
+    this._dbLogger.trace('Getting all jobs');
     const jobs = await this._JobModel
       .find()
       .select('jobData')
       .lean()
       .exec();
   
-    this._dbLogger.debug('Got all jobs');
+    this._dbLogger.trace('Got all jobs');
     return jobs.map(j => j.jobData as T);
   }
 
@@ -154,7 +154,7 @@ export default class JobDatabase<T extends object> {
    * @returns {Promise<(T & {startTime: Date;})[]>} All jobs of this type, with the start time.
    */
   async getAllJobsWithTime(): Promise<(T & { startTime: Date; })[]> {
-    this._dbLogger.debug('Getting all jobs with time');
+    this._dbLogger.trace('Getting all jobs with time');
     const jobs = await this._JobModel
       .find()
       .select('-_id -__v')
@@ -165,7 +165,7 @@ export default class JobDatabase<T extends object> {
       startTime: j.startTime,
       ...j.jobData
     }));
-    this._dbLogger.debug('Got all jobs with time');
+    this._dbLogger.trace('Got all jobs with time');
     return ret;
   }
 }
