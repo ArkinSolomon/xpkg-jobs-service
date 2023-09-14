@@ -12,9 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
  * either express or implied limitations under the License.
  */
-import { pino } from 'pino';
+import {pino} from 'pino';
 
-const logger = pino({
-  level: 'debug'
-});
+const level = process.env.NODE_ENV === 'production' ? 'info' : 'trace';
+
+const logger = pino({ level });
 export default logger;
