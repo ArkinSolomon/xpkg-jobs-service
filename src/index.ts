@@ -181,7 +181,7 @@ io.on('connection', client => {
   client.on('job_data', async (data: JobData) => {
     if (!authorized) {
       client.disconnect();
-      clientLogger.warn('Client attempted to send job data when unauthorized');
+      clientLogger.warn('Client sent job data when unauthorized');
       return;
     }
 
@@ -212,7 +212,7 @@ io.on('connection', client => {
       if (!sentJobInfo.packageId || typeof sentJobInfo.packageId !== 'string' || !sentJobInfo.packageVersion || typeof sentJobInfo.packageVersion !== 'string')
       {
         client.disconnect();
-        clientLogger.error('Client attempted to send invalid packaging job data');
+        clientLogger.error('Client sent invalid packaging job data');
         return;
       }
 
