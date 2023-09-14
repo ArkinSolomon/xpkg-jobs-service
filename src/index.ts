@@ -80,7 +80,9 @@ const packagingDatabase = new JobDatabase<PackagingInfo>(JobType.Packaging, asyn
       version: j.version,
       status: 'processing'
     }, {
-      status: 'failed_server'
+      $set: {
+        status: 'failed_server'
+      }
     })
     .exec();
 });
@@ -144,7 +146,7 @@ setTimeout(async () => {
 
 io.on('connection', client => {
   const clientLogger = logger.child({ ip: client.conn.remoteAddress });
-  clientLogger.info('New connection');
+  clientLogger.trace('New connection');
 
   let authorized = false;
   let jobDone = false;
@@ -188,7 +190,7 @@ io.on('connection', client => {
 
     jobType = data.jobType;
     clientLogger.setBindings(data);
-    clientLogger.info('Client data recieved');
+    clientLogger.trace('Client data recieved');
 
     switch (data.jobType) {
     case JobType.Packaging: {
@@ -300,7 +302,7 @@ io.on('connection', client => {
       return;
     }
 
-    clientLogger.info('Tried to fail job');
+    clientLogger.trace('Tried to fail job');
   });
 
   client.emit('handshake', process.env.SERVER_TRUST_KEY);
