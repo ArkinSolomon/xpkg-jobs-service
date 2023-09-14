@@ -21,7 +21,7 @@ const versionSchema = new Schema({
     type: String,
     required: true
   },
-  version: {
+  packageVersion: {
     type: String,
     required: true
   },

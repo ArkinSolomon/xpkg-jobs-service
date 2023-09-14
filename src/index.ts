@@ -45,7 +45,7 @@ type JobData = {
  */
 type PackagingInfo =  { 
   packageId: string;
-  version: string;
+  packageVersion: string;
 }
 
 /**
@@ -74,10 +74,15 @@ import JobClaimer from './jobClaimer.js';
 import VersionModel from './versionModel.js';
 
 const packagingDatabase = new JobDatabase<PackagingInfo>(JobType.Packaging, async j => {
+  const failLogger = logger.child({
+    packageId: j.packageId,
+    packageVersion: j.packageVersion,
+  });
+  failLogger.trace('Failing packaging job');
   await VersionModel
     .findOneAndUpdate({
       packageId: j.packageId,
-      version: j.version,
+      packageVersion: j.packageVersion,
       status: 'processing'
     }, {
       $set: {
@@ -85,6 +90,7 @@ const packagingDatabase = new JobDatabase<PackagingInfo>(JobType.Packaging, asyn
       }
     })
     .exec();
+  failLogger.trace('Failed packaging job');
 });
 
 const app = Express();
@@ -98,12 +104,12 @@ const server = https.createServer({
 }, app);
 const io = new Server(server);
 
-const packagingComparer = (job1: PackagingInfo, job2: PackagingInfo) => job1.packageId === job2.packageId && job1.version === job2.version;
+const packagingComparer = (job1: PackagingInfo, job2: PackagingInfo) => job1.packageId === job2.packageId && job1.packageVersion === job2.packageVersion;
 
 const unclaimedPackagingJobs = (await packagingDatabase.getAllJobsWithTime()).map(j => (
   <PackagingInfo>{
     packageId: j.packageId,
-    version: j.version
+    packageVersion: j.packageVersion
   }
 ));
 const packagingJobClaimer = new JobClaimer<PackagingInfo>(unclaimedPackagingJobs, packagingComparer, packagingDatabase);
@@ -136,7 +142,7 @@ setTimeout(async () => {
     for (const processingVersion of processingVersions) {
       const jobInfo = {
         packageId: processingVersion.packageId,
-        version: processingVersion.version
+        packageVersion: processingVersion.packageVersion
       };
       logger.info(jobInfo, 'Registering unregistered job');
       await packagingDatabase.addJob(jobInfo);
@@ -199,11 +205,11 @@ io.on('connection', client => {
       let sentJobInfo = data.info as PackagingInfo;
       sentJobInfo = {
         packageId: sentJobInfo.packageId,
-        version: sentJobInfo.version
+        packageVersion: sentJobInfo.packageVersion
       };
       jobInfo = sentJobInfo;
       
-      if (!sentJobInfo.packageId || typeof sentJobInfo.packageId !== 'string' || !sentJobInfo.version || typeof sentJobInfo.version !== 'string')
+      if (!sentJobInfo.packageId || typeof sentJobInfo.packageId !== 'string' || !sentJobInfo.packageVersion || typeof sentJobInfo.packageVersion !== 'string')
       {
         client.disconnect();
         clientLogger.error('Client attempted to send invalid packaging job data');
