@@ -242,7 +242,7 @@ io.on('connection', client => {
   client.on('done', async reason => {
     if (!authorized || !jobInfo || !jobType) {
       client.disconnect();
-      clientLogger.info('Client attempted to state job completed without authorization, or with no job data');
+      clientLogger.info('Client sent job completion without authorization, or with no job data');
       return;
     }
 
