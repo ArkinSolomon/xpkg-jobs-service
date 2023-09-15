@@ -156,6 +156,7 @@ io.on('connection', client => {
 
   let authorized = false;
   let jobDone = false;
+  let invalidJobData = false;
 
   let jobType: JobType | undefined;
   let jobInfo: ResourceInfo | PackagingInfo;
@@ -211,6 +212,7 @@ io.on('connection', client => {
       
       if (!sentJobInfo.packageId || typeof sentJobInfo.packageId !== 'string' || !sentJobInfo.packageVersion || typeof sentJobInfo.packageVersion !== 'string')
       {
+        invalidJobData = true;
         client.disconnect();
         clientLogger.error('Client sent invalid packaging job data');
         return;
@@ -285,6 +287,9 @@ io.on('connection', client => {
 
     if (jobDone) {
       clientLogger.info(`Completed worker has successfully disconnected from jobs service (${reason})`);
+      return;
+    } else if (invalidJobData) { 
+      clientLogger.info('Client disconnected because invalid job data was sent (server namespace disconnect)');
       return;
     } else if (reason === 'server namespace disconnect') {
       clientLogger.info('Worker would not respond to abort request (server namespace disconnect)');
